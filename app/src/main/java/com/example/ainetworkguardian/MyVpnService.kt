@@ -1,5 +1,6 @@
 package com.example.ainetworkguardian
 
+import android.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -17,6 +18,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.Buffer
 import java.nio.ByteBuffer
+import kotlin.math.log2
 
 class MyVpnService : VpnService() , Runnable {
 
@@ -107,6 +109,27 @@ class MyVpnService : VpnService() , Runnable {
         stopvpntunnel()
     }
 
+    data class PacketInfo (
+        val protocol: Int,
+        val sourceIp: String,
+        val destIp: String,
+        val sourcePort: Int,
+        val destPort: Int,
+        val totalLength: Int,
+        val payloadLength: Int,
+        val tcpFlags: TcpFlags?,
+        val entropy: Double
+    )
+
+    data class TcpFlags(
+        val isFin: Boolean,
+        val isSyn: Boolean,
+        val isRst: Boolean,
+        val isPsh: Boolean,
+        val isAck: Boolean,
+        val isUrg: Boolean
+    )
+
 
     override fun run() {
         var inputStream: FileInputStream? = null
@@ -133,20 +156,27 @@ class MyVpnService : VpnService() , Runnable {
             Log.d("VPN_DEBUG", "VPN interface established")
             Log.d("VPN_DEBUG", "Waiting for packets...")
 
-            val packetBuffer = ByteArray(32768)
+            val packetBuffer = ByteBuffer.allocate(32768)
 
             while (isRunning && !Thread.currentThread().isInterrupted) {
-                val length = inputStream.read(packetBuffer)
+                val length = inputStream.read(packetBuffer.array())
 
                 if (length > 0) {
-                    val hexString = packetBuffer.take(length).joinToString(" ") { byte ->
-                        String.format("%02X", byte)
-                    }
+                    val packetinfo = parseipv4packet(packetBuffer,length)
 
                     Log.d("VPN_DEBUG", "Packet Length: $length bytes")
-                    Log.d("VPN_DEBUG", "Packet Data (HEX): $hexString")
 
-                    val message = "$hexString"
+                    val message = """
+                        Protocol: ${packetinfo?.protocol},
+                        Source IP: ${packetinfo?.sourceIp},
+                        Destination IP: ${packetinfo?.destIp},
+                        Source Port: ${packetinfo?.sourcePort},
+                        Destination Port: ${packetinfo?.destPort},
+                        Total Length: ${packetinfo?.totalLength},
+                        Payload Length: ${packetinfo?.payloadLength},
+                        TCP Flags: ${packetinfo?.tcpFlags},
+                        Entropy: ${packetinfo?.entropy}
+                    """.trimIndent()
 
                     sendBroadcast(
                         Intent("VPN_DATA_BROADCAST").apply {
@@ -182,20 +212,128 @@ class MyVpnService : VpnService() , Runnable {
         }
     }
 
-    private fun parseipv4packet(buffer: ByteBuffer){
+    private fun parseipv4packet(buffer: ByteBuffer,length:Int): PacketInfo? {
 
-        if(buffer.remaining() < 20)
-            return
+        if(buffer.remaining() < 40)
+            return null
 
         val firstbyte = buffer.get(0).toInt() and 0xff
         val version = firstbyte shr 4
+
+        val ipHeaderLength = (firstbyte and 0x0F) * 4
+
+        Log.d("IPVersion","$version")
 
         val byte2 = buffer.get(2).toInt() and 0xFF
         val byte3 = buffer.get(3).toInt() and 0xFF
 
         val sizeofpacket = (byte2 shl 8) or byte3
 
+        val protocol = buffer.get(9).toInt() and 0xFF
 
+        var sourcePort = 0
+        var destPort = 0
+        var transportHeaderLength = 0
+        var tcpFlags: TcpFlags? = null
+
+        val totalLength = buffer.getShort(2).toInt() and 0xFFFF
+
+        val srcIpBytes = ByteArray(4)
+        val dstIpBytes = ByteArray(4)
+
+        buffer.position(12)
+        buffer.get(srcIpBytes)
+        buffer.get(dstIpBytes)
+
+        val sourceIp = srcIpBytes.joinToString(".") { (it.toInt() and 0xFF).toString() }
+        val destIp = dstIpBytes.joinToString(".") { (it.toInt() and 0xFF).toString() }
+
+        if (protocol == 6) { // TCP
+            if (length < ipHeaderLength + 20) return null
+            buffer.position(ipHeaderLength)
+
+            sourcePort = buffer.short.toInt() and 0xFFFF
+            destPort = buffer.short.toInt() and 0xFFFF
+
+            // Data Offset field contains TCP Header Length (in 32-bit words)
+            val dataOffsetByte = buffer.get(ipHeaderLength + 12).toInt() and 0xFF
+            transportHeaderLength = ((dataOffsetByte shr 4) and 0x0F) * 4
+
+            // Extract 6 control flag bits from offset + 13
+            val flagsByte = buffer.get(ipHeaderLength + 13).toInt() and 0xFF
+            tcpFlags = TcpFlags(
+                isFin = (flagsByte and 0x01) != 0,
+                isSyn = (flagsByte and 0x02) != 0,
+                isRst = (flagsByte and 0x04) != 0,
+                isPsh = (flagsByte and 0x08) != 0,
+                isAck = (flagsByte and 0x10) != 0,
+                isUrg = (flagsByte and 0x20) != 0
+            )
+        } else if (protocol == 17) { // UDP
+            if (length < ipHeaderLength + 8) return null
+            buffer.position(ipHeaderLength)
+
+            sourcePort = buffer.short.toInt() and 0xFFFF
+            destPort = buffer.short.toInt() and 0xFFFF
+            transportHeaderLength = 8 // Fixed 8-byte UDP header
+        }
+
+        Log.d("Size of Packet","$sizeofpacket")
+
+        val ipheaderlength = firstbyte * 4
+        val udpstartoffest = ipheaderlength
+
+        val dest_port_byte1 = buffer.get(udpstartoffest + 2).toInt() and 0xFF
+        val dest_port_byte2 = buffer.get(udpstartoffest + 3).toInt() and 0xFF
+
+        val port = (dest_port_byte1 shl 8) or dest_port_byte2
+
+        Log.d("PORT ","$port")
+
+        val payloadStart = ipHeaderLength + transportHeaderLength
+        val payloadLength = (length - payloadStart).coerceAtLeast(0)
+
+        val entropy = if (payloadLength > 0) {
+            val payloadBytes = ByteArray(payloadLength)
+            buffer.position(payloadStart)
+            buffer.get(payloadBytes)
+            calculateShannonEntropy(payloadBytes)
+        } else {
+            0.0
+        }
+
+        return PacketInfo(
+            protocol = protocol,
+            sourceIp = sourceIp,
+            destIp = destIp,
+            sourcePort = sourcePort,
+            destPort = destPort,
+            totalLength = totalLength,
+            payloadLength = payloadLength,
+            tcpFlags = tcpFlags,
+            entropy = entropy
+        )
+
+    }
+
+    private fun calculateShannonEntropy(data: ByteArray): Double {
+        if(data.isEmpty()) return 0.0
+
+        val frequencymap = IntArray(256)
+        for (byte in data)
+            frequencymap[byte.toInt() and 0xFF]++
+
+        var entropy: Double = 0.0
+        val totalBytes = data.size.toDouble()
+
+        for(count in frequencymap){
+            if (count > 0){
+                val probability = count / totalBytes
+                entropy -= probability * log2(probability)
+
+            }
+        }
+        return entropy
     }
 
 }
