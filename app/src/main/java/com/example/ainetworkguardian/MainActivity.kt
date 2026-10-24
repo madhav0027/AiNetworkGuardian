@@ -15,12 +15,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ainetworkguardian.ui.theme.AINetworkGuardianTheme
+
 
 class MainActivity : ComponentActivity() {
 
@@ -37,7 +40,6 @@ class MainActivity : ComponentActivity() {
                     myView.append("$incomingmessage\n")
                 }
             }
-
         }
     }
 
@@ -55,19 +57,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContentView(R.layout.activity_main);
-        myView = findViewById<TextView>(R.id.textview)
-        val btn : Button = findViewById<Button>(R.id.startvpn);
-        val stopbtn : Button = findViewById<Button>(R.id.stopvpn);
 
-        btn.setOnClickListener {
-            vpntunnel();
+
+        setContent{
+            val networkViewModel: NetworkViewModel = viewModel()
+
+            MaterialTheme{
+                PacketAnalyzerScreen(
+                    networkViewModel = networkViewModel,
+                )
+            }
         }
-
-        stopbtn.setOnClickListener {
-            StopVpnTUnnelService()
-        }
-
 
     }
 
