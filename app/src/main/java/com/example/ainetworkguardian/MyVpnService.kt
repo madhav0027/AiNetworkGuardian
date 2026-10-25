@@ -18,7 +18,11 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.Buffer
 import java.nio.ByteBuffer
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.log2
+import kotlin.random.Random
 
 class MyVpnService : VpnService() , Runnable {
 
@@ -109,26 +113,6 @@ class MyVpnService : VpnService() , Runnable {
         stopvpntunnel()
     }
 
-    data class PacketInfo (
-        val protocol: Int,
-        val sourceIp: String,
-        val destIp: String,
-        val sourcePort: Int,
-        val destPort: Int,
-        val totalLength: Int,
-        val payloadLength: Int,
-        val tcpFlags: TcpFlags?,
-        val entropy: Double
-    )
-
-    data class TcpFlags(
-        val isFin: Boolean,
-        val isSyn: Boolean,
-        val isRst: Boolean,
-        val isPsh: Boolean,
-        val isAck: Boolean,
-        val isUrg: Boolean
-    )
 
 
     override fun run() {
@@ -181,9 +165,10 @@ class MyVpnService : VpnService() , Runnable {
                     sendBroadcast(
                         Intent("VPN_DATA_BROADCAST").apply {
                             setPackage(packageName)
-                            putExtra("log_message", message)
+                            putExtra("log_message", packetinfo)
                         }
                     )
+                    Log.d("Packetinfo","PACKET INFO : ${packetinfo}")
                 }
             }
         } catch (e: InterruptedException) {
@@ -302,10 +287,16 @@ class MyVpnService : VpnService() , Runnable {
             0.0
         }
 
+        val randomInt: Int = Random.nextInt()
+
+        val sdf = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+
         return PacketInfo(
-            protocol = protocol,
+            id = "PKT-${randomInt}",
+            timestamp = sdf.format((Date())),
             sourceIp = sourceIp,
             destIp = destIp,
+            protocol = protocol.toString(),
             sourcePort = sourcePort,
             destPort = destPort,
             totalLength = totalLength,
